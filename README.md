@@ -33,3 +33,5 @@
 ## Шифрование
 
 Передача использует [Magic Wormhole](https://magic-wormhole.readthedocs.io/en/latest/client-protocol.html), на Android — [Wormhole William](https://github.com/psanford/wormhole-william). Публичный сервер relay.magic-wormhole.io пересылает зашифрованные сообщения и видит сетевые подключения. Передавайте код только получателю.
+
+На Windows журнал передачи находится в %LOCALAPPDATA%\VPN Transfer\transfer.log. В нём записываются этапы сеанса и типы ошибок. Код передачи и содержимое сообщения в журнал не попадают. APP_ID — публичный идентификатор протокола, общий для Windows и Android.
