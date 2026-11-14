@@ -8,6 +8,9 @@ import android.content.ClipboardManager;
 import android.content.Intent;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.os.SystemClock;
 import android.os.PersistableBundle;
 import android.provider.OpenableColumns;
 import android.text.InputType;
@@ -27,9 +30,6 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
-import java.net.HttpURLConnection;
-import java.net.URL;
-import org.json.JSONObject;
 import java.security.SecureRandom;
 import java.util.Locale;
 
@@ -39,13 +39,22 @@ public final class MainActivity extends Activity {
     private static final int LIMIT = 32768;
     private static final String PHRASE = "[a-zа-яё0-9]{2,24}(?:-[a-zа-яё0-9]{2,24}){3,7}";
 
-    private static final String RELEASES = "https://github.com/JohnWarrior01/vpn-transfer/releases/latest";
-    private static final String RELEASE_API = "https://api.github.com/repos/JohnWarrior01/vpn-transfer/releases/latest";
 
     private EditText code;
     private TextView status;
     private Switch custom;
+    private Button updateButton;
     private Button sendFile, sendText, receive, cancel, copyCode;
+    private TextView timer;
+    private final Handler handler = new Handler(Looper.getMainLooper());
+    private long deadline;
+    private final Runnable tick = new Runnable() {
+        @Override public void run() {
+            long seconds = Math.max(0, (deadline - SystemClock.elapsedRealtime() + 999) / 1000);
+            timer.setText(String.format(Locale.ROOT, "Осталось %d:%02d", seconds / 60, seconds % 60));
+            if (seconds > 0) handler.postDelayed(this, 250);
+        }
+    };
     private Session session;
     private boolean busy;
     private byte[] pendingFile;
@@ -62,7 +71,7 @@ public final class MainActivity extends Activity {
         setContentView(scroll);
 
         TextView title = new TextView(this);
-        title.setText("Передача VPN-ключей");
+        title.setText("ТССП");
         title.setTextSize(26);
         content.addView(title);
         TextView description = new TextView(this);
@@ -85,66 +94,108 @@ public final class MainActivity extends Activity {
         code.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
         code.setSaveEnabled(false);
         content.addView(code);
-        copyCode = button(content, "Скопировать код", () -> copy(code.getText().toString()));
-        copyCode.setVisibility(View.GONE);
+        copyCode = button(content, "Вставить код", () -> {
+            if (busy) {
+                copy(code.getText().toString());
+                copyCode.setText("Код скопирован");
+                return;
+            }
+            ClipboardManager clipboard = getSystemService(ClipboardManager.class);
+            ClipData clip = clipboard.getPrimaryClip();
+            CharSequence value = clip == null ? null : clip.getItemAt(0).getText();
+            if (value == null) status.setText("В буфере обмена нет текста.");
+            else code.setText(normalize(value.toString()));
+        });
         receive = button(content, "Получить", this::receive);
         cancel = button(content, "Остановить", () -> {
             cancel.setEnabled(false);
+            copyCode.setEnabled(false);
             if (session != null) session.cancel();
         });
         status = new TextView(this);
         status.setText("Оба устройства должны быть онлайн.");
         content.addView(status);
-        button(content, "Проверить обновления", this::checkUpdates);
+        timer = new TextView(this);
+        content.addView(timer);
+        updateButton = button(content, "Проверить обновления", this::checkUpdates);
         TextView version = new TextView(this);
-        version.setText("Версия 1.0.0");
+        version.setText("Версия " + Updates.VERSION);
         content.addView(version);
         setBusy(false);
     }
 
     private void checkUpdates() {
+        updateButton.setEnabled(false);
         new Thread(() -> {
-            String result;
-            HttpURLConnection connection = null;
             try {
-                connection = (HttpURLConnection) new URL(RELEASE_API).openConnection();
-                connection.setConnectTimeout(8000);
-                connection.setReadTimeout(8000);
-                try (InputStream input = connection.getInputStream()) {
-                    ByteArrayOutputStream body = new ByteArrayOutputStream();
-                    byte[] buffer = new byte[4096];
-                    for (int count; (count = input.read(buffer)) != -1;) {
-                        if (body.size() + count > 262144) throw new IOException();
-                        body.write(buffer, 0, count);
-                    }
-                    String tag = new JSONObject(body.toString("UTF-8")).getString("tag_name");
-                    if (!tag.matches("v[0-9]+\\.[0-9]+\\.[0-9]+")) throw new IOException();
-                    String[] parts = tag.substring(1).split("\\.");
-                    int major = Integer.parseInt(parts[0]);
-                    result = major > 1 || major == 1 && (Integer.parseInt(parts[1]) > 0 ||
-                        Integer.parseInt(parts[2]) > 0) ? tag : "";
-                }
-            } catch (Exception error) {
-                result = null;
-            } finally {
-                if (connection != null) connection.disconnect();
+                Updates.Asset asset = Updates.find();
+                runOnUiThread(() -> offerUpdate(asset));
+            } catch (IOException | org.json.JSONException error) {
+                runOnUiThread(() -> finishUpdate("Не удалось проверить обновления."));
             }
-            final String tag = result;
-            runOnUiThread(() -> {
-                if (isDestroyed() || isFinishing()) return;
-                AlertDialog.Builder dialog = new AlertDialog.Builder(this).setTitle("Обновления");
-                if (tag == null) {
-                    dialog.setMessage("Не удалось проверить GitHub. Повторите позже.").setPositiveButton("Закрыть", null);
-                } else if (tag.isEmpty()) {
-                    dialog.setMessage("Установлена актуальная версия.").setPositiveButton("Закрыть", null);
-                } else {
-                    dialog.setMessage("Доступна версия " + tag + ".")
-                        .setNegativeButton("Закрыть", null).setPositiveButton("Открыть загрузку",
-                            (d, which) -> startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(RELEASES))));
-                }
-                dialog.show();
-            });
         }).start();
+    }
+
+    private void offerUpdate(Updates.Asset asset) {
+        if (isDestroyed() || isFinishing()) return;
+        updateButton.setEnabled(true);
+        if (asset == null) {
+            finishUpdate("Установлена актуальная версия.");
+            return;
+        }
+        new AlertDialog.Builder(this).setTitle("Обновления")
+            .setMessage("Скачать версию " + asset.tag + "?")
+            .setNegativeButton("Отмена", null)
+            .setPositiveButton("Скачать", (dialog, which) -> downloadUpdate(asset)).show();
+    }
+
+    private void downloadUpdate(Updates.Asset asset) {
+        updateButton.setEnabled(false);
+        updateButton.setText("Загрузка… 0%");
+        new Thread(() -> {
+            try {
+                Updates.download(asset, getCacheDir(), percent -> runOnUiThread(() ->
+                    updateButton.setText("Загрузка… " + percent + "%")));
+                runOnUiThread(this::offerInstall);
+            } catch (IOException | java.security.NoSuchAlgorithmException error) {
+                runOnUiThread(() -> finishUpdate("Не удалось скачать или проверить APK."));
+            }
+        }).start();
+    }
+
+    private void finishUpdate(String message) {
+        updateButton.setText("Проверить обновления");
+        updateButton.setEnabled(true);
+        if (message != null && !isDestroyed() && !isFinishing()) {
+            new AlertDialog.Builder(this).setTitle("Обновления").setMessage(message)
+                .setPositiveButton("Закрыть", null).show();
+        }
+    }
+
+    private void offerInstall() {
+        finishUpdate(null);
+        if (isDestroyed() || isFinishing()) return;
+        new AlertDialog.Builder(this).setTitle("Обновление скачано")
+            .setMessage("Откроется системное окно установки.")
+            .setNegativeButton("Позже", null)
+            .setPositiveButton("Установить", (dialog, which) -> installUpdate()).show();
+    }
+
+    private void installUpdate() {
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= 26 && !getPackageManager().canRequestPackageInstalls()) {
+                Intent settings = new Intent(android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                    Uri.parse("package:" + getPackageName()));
+                startActivityForResult(settings, 3);
+                return;
+            }
+            Intent installer = new Intent(Intent.ACTION_VIEW);
+            installer.setDataAndType(UpdateProvider.APK, UpdateProvider.TYPE);
+            installer.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            startActivity(installer);
+        } catch (android.content.ActivityNotFoundException | SecurityException error) {
+            finishUpdate("Не удалось открыть системный установщик.");
+        }
     }
 
     private Button button(LinearLayout parent, String label, Runnable action) {
@@ -236,7 +287,10 @@ public final class MainActivity extends Activity {
                 runOnUiThread(() -> {
                     if (isDestroyed()) return;
                     code.setText(value);
-                    copyCode.setVisibility(View.VISIBLE);
+                    if (cancel.isEnabled()) {
+                        copyCode.setText("Скопировать код");
+                        copyCode.setEnabled(true);
+                    }
                     status.setText("Продиктуйте номер и слова получателю. Сеанс длится до 5 минут.");
                 });
             }
@@ -265,7 +319,7 @@ public final class MainActivity extends Activity {
                     if (isDestroyed()) return;
                     session = null;
                     code.setText("");
-                    copyCode.setVisibility(View.GONE);
+                    copyCode.setText("Вставить код");
                     setBusy(false);
                     status.setText(error.isEmpty() ? (outbound ? "Данные доставлены." : "Данные получены.") : error);
                 });
@@ -275,6 +329,14 @@ public final class MainActivity extends Activity {
 
     private void setBusy(boolean value) {
         busy = value;
+        copyCode.setEnabled(!value);
+        handler.removeCallbacks(tick);
+        if (value) {
+            deadline = SystemClock.elapsedRealtime() + 300000;
+            tick.run();
+        } else {
+            timer.setText("");
+        }
         custom.setEnabled(!value);
         sendFile.setEnabled(!value);
         sendText.setEnabled(!value);
@@ -285,19 +347,26 @@ public final class MainActivity extends Activity {
 
     private void showText(String text) {
         EditText viewer = secretEditor(true);
-        viewer.setText(text);
+        viewer.setHint("Текст скрыт");
         viewer.setKeyListener(null);
         viewer.setTextIsSelectable(true);
         AlertDialog dialog = new AlertDialog.Builder(this).setTitle("Полученный текст")
             .setView(viewer).setNegativeButton("Закрыть", null)
+            .setNeutralButton("Показать", null)
             .setPositiveButton("Копировать", (d, which) -> copy(text)).create();
         dialog.show();
         dialog.getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
+        Button toggle = dialog.getButton(AlertDialog.BUTTON_NEUTRAL);
+        toggle.setOnClickListener(view -> {
+            boolean reveal = viewer.length() == 0;
+            viewer.setText(reveal ? text : "");
+            toggle.setText(reveal ? "Скрыть" : "Показать");
+        });
     }
 
     private void copy(String value) {
         ClipboardManager clipboard = getSystemService(ClipboardManager.class);
-        ClipData clip = ClipData.newPlainText("VPN Transfer", value);
+        ClipData clip = ClipData.newPlainText("ТССП", value);
         if (android.os.Build.VERSION.SDK_INT >= 24) {
             PersistableBundle extras = new PersistableBundle();
             extras.putBoolean("android.content.extra.IS_SENSITIVE", true);
@@ -309,6 +378,10 @@ public final class MainActivity extends Activity {
 
     @Override protected void onActivityResult(int request, int result, Intent intent) {
         super.onActivityResult(request, result, intent);
+        if (request == 3) {
+            if (android.os.Build.VERSION.SDK_INT >= 26 && getPackageManager().canRequestPackageInstalls()) installUpdate();
+            return;
+        }
         Uri uri = result == RESULT_OK && intent != null ? intent.getData() : null;
         if (request == SAVE_FILE) {
             byte[] data = pendingFile;
@@ -352,6 +425,7 @@ public final class MainActivity extends Activity {
     @Override protected void onDestroy() {
         if (session != null) session.cancel();
         pendingFile = null;
+        handler.removeCallbacks(tick);
         super.onDestroy();
     }
 }

@@ -1,13 +1,13 @@
-# VPN Transfer
+# ТССП
 
 Сквозная передача VPN-конфигов и текстовых ключей между Windows и Android через Magic Wormhole.
 
-[Скачать для Windows и Android](https://github.com/JohnWarrior01/vpn-transfer/releases/latest)
+[Скачать для Windows и Android](https://github.com/JohnWarrior01/tssp/releases/latest)
 
 ## Установка
 
-- **Windows x64.** Распакуйте Windows-архив и запустите VPN-Transfer.exe.
-- **Android 6.0 и новее.** Скачайте VPN-Transfer-Android.apk из релиза и откройте его на телефоне. Сборка поддерживает ARM64, ARMv7 и x86-64.
+- **Windows x64.** Распакуйте Windows-архив и запустите TSSP.exe.
+- **Android 6.0 и новее.** Скачайте TSSP-Android-1.2.0.apk из релиза и откройте его на телефоне. Сборка поддерживает ARM64, ARMv7 и x86-64.
 
 ## Передача
 
@@ -20,13 +20,13 @@
 
 ## Обновления
 
-Кнопка «Проверить обновления» запрашивает последний стабильный релиз GitHub. Если доступна новая версия, приложение предлагает открыть официальную страницу загрузки. Установка выполняется пользователем. Ключи и коды передачи в запрос на GitHub не входят.
+Кнопка «Проверить обновления» запрашивает последний стабильный релиз GitHub. Начиная с версии 1.2.0 приложение загружает сборку прямо из GitHub Releases и проверяет размер и SHA-256. На Windows пользователь выбирает папку для ZIP. На Android приложение открывает системный установщик APK, где пользователь подтверждает установку. Для выпусков используйте имена TSSP-Windows-x64.zip и TSSP-Android.apk или добавляйте к ним суффикс с номером версии. Ключи и коды передачи в запрос на GitHub не входят.
 
 ## Сборка
 
 - Windows. Python 3.11, зависимости из windows/requirements.txt и PyInstaller. Команда из корня репозитория:
 
-      python -m PyInstaller --windowed --onefile --name VPN-Transfer --hidden-import autobahn.twisted.websocket --hidden-import twisted.internet.ssl --collect-data autobahn --collect-data spake2 --copy-metadata magic-wormhole windows/vpn_transfer.py
+      python -m PyInstaller --windowed --onefile --name TSSP --hidden-import autobahn.twisted.websocket --hidden-import twisted.internet.ssl --collect-data autobahn --collect-data spake2 --copy-metadata magic-wormhole windows/vpn_transfer.py
 
 - Android. Скрипт android/build.ps1 использует JDK, Python 3, Go 1.26, gomobile и gobind версии, указанной в android/go.mod. Он ожидает Go в go/bin, Go-модули в gopath, кэш в gocache и Android SDK в android-sdk рядом с папкой android. Нужны Platform 35, Build Tools 35.0.0 и NDK 28.2.13676358. Скачайте исходники wormhole-william v1.0.8 в android/wormhole-william и примените android/mailbox-limit.patch. APK записывается в папку outputs на уровень выше корня репозитория. При первой сборке создаётся локальный ключ подписи. Сохраните свой прежний ключ, если собираете обновление для уже установленной сборки.
 

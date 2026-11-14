@@ -1,4 +1,4 @@
-param([switch]$SkipBind)
+param([switch]$SkipBind, [string]$ApkName = "VPN-Transfer-Android.apk")
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
 Set-Location $PSScriptRoot
@@ -16,7 +16,7 @@ if (-not $SkipBind) {
     gomobile bind '-target=android/arm64,android/arm,android/amd64' -androidapi 23 -o build\bridge.aar ./bridge
 }
 python -m zipfile -e build\bridge.aar build\binding
-javac -encoding UTF-8 --release 8 -classpath "$jar;build\binding\classes.jar" -d build\classes java\MainActivity.java
+javac -encoding UTF-8 --release 8 -classpath "$jar;build\binding\classes.jar" -d build\classes (Get-ChildItem java -Filter '*.java').FullName
 & "$tools\d8.bat" --release --min-api 23 --lib $jar --output build\dex build\binding\classes.jar (Get-ChildItem build\classes -Recurse -Filter '*.class').FullName
 & "$tools\aapt2.exe" link -I $jar --manifest AndroidManifest.xml -o build\base.apk
 @"
@@ -37,7 +37,6 @@ if (-not (Test-Path release.p12)) {
 } else {
     $env:VPN_SIGNING_PASSWORD = (Get-Content signing-password.txt -Raw).Trim()
 }
-& "$tools\apksigner.bat" sign --ks release.p12 --ks-key-alias vpn-transfer --ks-pass env:VPN_SIGNING_PASSWORD --out ..\..\outputs\VPN-Transfer-Android.apk build\aligned.apk
-& "$tools\apksigner.bat" verify --verbose ..\..\outputs\VPN-Transfer-Android.apk
-& "$tools\aapt2.exe" dump badging ..\..\outputs\VPN-Transfer-Android.apk | Select-String 'package:|sdkVersion:|native-code:'
-
+& "$tools\apksigner.bat" sign --ks release.p12 --ks-key-alias vpn-transfer --ks-pass env:VPN_SIGNING_PASSWORD --out "..\..\outputs\$ApkName" build\aligned.apk
+& "$tools\apksigner.bat" verify --verbose "..\..\outputs\$ApkName"
+& "$tools\aapt2.exe" dump badging "..\..\outputs\$ApkName" | Select-String 'package:|sdkVersion:|native-code:'

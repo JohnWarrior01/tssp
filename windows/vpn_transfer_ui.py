@@ -1,4 +1,4 @@
-import json
+import os
 import math
 import queue
 import re
@@ -6,8 +6,6 @@ import secrets
 import threading
 import time
 import tkinter as tk
-import urllib.request
-import webbrowser
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
@@ -15,7 +13,8 @@ from twisted.internet import reactor
 
 from vpn_files import read_config, safe_name, save_config
 from vpn_protocol import pack
-from vpn_settings import RELEASES, RELEASE_API, TIMEOUT, VERSION
+from vpn_settings import TIMEOUT, VERSION
+from vpn_updates import UPDATE_ERRORS, download, find_update
 from vpn_transfer_session import Transfer
 from vpn_text_dialog import text_dialog
 
@@ -42,12 +41,12 @@ class App:
         self.code_mode = tk.StringVar(value="auto")
         self.code = tk.StringVar()
         self.status = tk.StringVar(value="Оба компьютера должны быть онлайн.")
-        root.title("Передача VPN-ключей")
+        root.title("ТССП")
         root.resizable(False, False)
         root.protocol("WM_DELETE_WINDOW", self.close)
         panel = ttk.Frame(root, padding=24)
         panel.grid(sticky="nsew")
-        ttk.Label(panel, text="Передача VPN-ключей", font=("Segoe UI", 21, "bold")).grid(
+        ttk.Label(panel, text="ТССП", font=("Segoe UI", 21, "bold")).grid(
             row=0, columnspan=2, sticky="w"
         )
         ttk.Label(panel, text="Сквозное шифрование · файл или текст до 32 КБ").grid(
@@ -104,25 +103,39 @@ class App:
 
         def fetch():
             try:
-                with urllib.request.urlopen(RELEASE_API, timeout=8) as response:
-                    tag = json.loads(response.read(262144))["tag_name"]
-                if not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", tag):
-                    raise ValueError
-                version = tuple(map(int, tag[1:].split(".")))
-                self.events.put(("update", tag if version > VERSION else ""))
-            except (OSError, ValueError, TypeError, KeyError):
-                self.events.put(("update", None))
+                self.events.put(("update", find_update()))
+            except UPDATE_ERRORS:
+                self.events.put(("update_error", "Не удалось проверить обновления."))
 
         threading.Thread(target=fetch, daemon=True).start()
 
-    def show_update(self, tag):
+    def show_update(self, update):
         self.update_button.state(["!disabled"])
-        if tag is None:
-            messagebox.showerror("Обновления", "Не удалось проверить GitHub. Повторите позже.", parent=self.root)
-        elif not tag:
+        if update is None:
             messagebox.showinfo("Обновления", "Установлена актуальная версия.", parent=self.root)
-        elif messagebox.askyesno("Обновления", f"Доступна версия {tag}. Открыть страницу загрузки?", parent=self.root):
-            webbrowser.open(RELEASES)
+            return
+        if not messagebox.askyesno("Обновления", f"Скачать версию {update.tag}?", parent=self.root):
+            return
+        name = filedialog.asksaveasfilename(parent=self.root, initialfile=update.name, defaultextension=".zip")
+        if not name:
+            return
+        target = Path(name)
+        self.update_button.state(["disabled"])
+        self.update_button.configure(text="Загрузка… 0%")
+
+        def fetch():
+            try:
+                download(update, target, lambda percent: self.events.put(("update_progress", percent)))
+            except UPDATE_ERRORS:
+                self.events.put(("update_error", "Не удалось скачать или проверить архив."))
+            else:
+                self.events.put(("update_saved", target))
+
+        threading.Thread(target=fetch, daemon=True).start()
+
+    def finish_update(self):
+        self.update_button.configure(text="Проверить обновления")
+        self.update_button.state(["!disabled"])
 
     def send(self):
         name = filedialog.askopenfilename(parent=self.root, title="Выберите VPN-конфиг или ключ")
@@ -242,6 +255,18 @@ class App:
                 self.status.set("Продиктуйте получателю число и все слова или скопируйте код (Ctrl+C). Сеанс длится до 5 минут.")
             elif kind == "update":
                 self.show_update(value)
+            elif kind == "update_progress":
+                self.update_button.configure(text=f"Загрузка… {value}%")
+            elif kind == "update_error":
+                self.finish_update()
+                messagebox.showerror("Обновления", value, parent=self.root)
+            elif kind == "update_saved":
+                self.finish_update()
+                if messagebox.askyesno("Обновления", "Архив проверен и сохранён. Открыть папку?", parent=self.root):
+                    try:
+                        os.startfile(value.parent)
+                    except OSError:
+                        messagebox.showinfo("Обновления", str(value), parent=self.root)
             elif kind == "payload":
                 self.received = value
             elif kind == "done":
@@ -256,8 +281,11 @@ class App:
         self.root.after(80, self.poll)
 
     def close(self):
+        if self.update_button.cget("text").startswith("Загрузка"):
+            messagebox.showinfo("Обновления", "Дождитесь завершения загрузки.", parent=self.root)
+            return
         if self.mode and not messagebox.askyesno(
-            "Передача VPN-ключей", "Остановить передачу и закрыть окно?", parent=self.root
+            "ТССП", "Остановить передачу и закрыть окно?", parent=self.root
         ):
             return
         self.root.destroy()
