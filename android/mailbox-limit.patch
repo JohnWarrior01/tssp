@@ -1,7 +1,15 @@
-diff --git a/rendezvous/client.go b/rendezvous/client.go
 --- a/rendezvous/client.go
 +++ b/rendezvous/client.go
-@@ -143,2 +143,3 @@
+@@ -140,6 +140,7 @@
+ 		return nil, wrappedErr
+ 	}
  
 +	c.wsClient.SetReadLimit(256 * 1024)
  	go c.readMessages(ctx)
+ 
+ 	var welcome msgs.Welcome
+@@ -691,3 +692,4 @@
+ 
+ 	}
+ }
++
