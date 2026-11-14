@@ -1,0 +1,7 @@
+diff --git a/rendezvous/client.go b/rendezvous/client.go
+--- a/rendezvous/client.go
++++ b/rendezvous/client.go
+@@ -143,2 +143,3 @@
+ 
++	c.wsClient.SetReadLimit(256 * 1024)
+ 	go c.readMessages(ctx)
