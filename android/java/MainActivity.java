@@ -97,7 +97,7 @@ public final class MainActivity extends Activity {
         content.addView(status);
         button(content, "Проверить обновления", this::checkUpdates);
         TextView version = new TextView(this);
-        version.setText("Версия 2.0.0");
+        version.setText("Версия 1.0.0");
         content.addView(version);
         setBusy(false);
     }
@@ -121,7 +121,7 @@ public final class MainActivity extends Activity {
                     if (!tag.matches("v[0-9]+\\.[0-9]+\\.[0-9]+")) throw new IOException();
                     String[] parts = tag.substring(1).split("\\.");
                     int major = Integer.parseInt(parts[0]);
-                    result = major > 2 || major == 2 && (Integer.parseInt(parts[1]) > 0 ||
+                    result = major > 1 || major == 1 && (Integer.parseInt(parts[1]) > 0 ||
                         Integer.parseInt(parts[2]) > 0) ? tag : "";
                 }
             } catch (Exception error) {

@@ -18,7 +18,7 @@ from wormhole.cli.public_relay import MAILBOX_RELAY
 from wormhole.errors import WrongPasswordError
 
 APP_ID = "6c880aab-d491-4554-b906-645ca0a89d0d/vpn-transfer-v2"
-VERSION = (2, 0, 0)
+VERSION = (1, 0, 0)
 RELEASES = "https://github.com/JohnWarrior01/vpn-transfer/releases/latest"
 RELEASE_API = "https://api.github.com/repos/JohnWarrior01/vpn-transfer/releases/latest"
 MAX_BYTES = 32 * 1024
@@ -199,7 +199,7 @@ class App:
         )
         self.update_button = ttk.Button(panel, text="Проверить обновления", command=self.check_updates)
         self.update_button.grid(row=9, column=0, sticky="w", pady=(12, 0))
-        ttk.Label(panel, text="Версия 2.0.0").grid(row=9, column=1, sticky="e", pady=(12, 0))
+        ttk.Label(panel, text="Версия " + ".".join(map(str, VERSION))).grid(row=9, column=1, sticky="e", pady=(12, 0))
         panel.columnconfigure((0, 1), weight=1)
         root.after(80, self.poll)
 
