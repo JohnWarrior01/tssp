@@ -37,12 +37,14 @@ public final class MainActivity extends Activity {
     private static final int OPEN_FILE = 1;
     private static final int SAVE_FILE = 2;
     private static final int LIMIT = 32768;
-    private static final String PHRASE = "[a-zа-яё0-9]{2,24}(?:-[a-zа-яё0-9]{2,24}){3,7}";
+    private static final String PHRASE = "[a-zа-яё0-9]{2,24}(?:-[a-zа-яё0-9]{2,24}){1,7}";
 
 
     private EditText code;
     private TextView status;
-    private Switch custom;
+    private Switch custom, offline;
+    private String customDisplay;
+    private String broker = "";
     private Button updateButton;
     private Button sendFile, sendText, receive, cancel, copyCode;
     private TextView timer;
@@ -81,6 +83,9 @@ public final class MainActivity extends Activity {
         custom = new Switch(this);
         custom.setText("Задать свою фразу");
         content.addView(custom);
+        offline = new Switch(this);
+        offline.setText("Отложенная отправка");
+        content.addView(offline);
         sendFile = button(content, "Отправить файл", () -> {
             Intent pick = new Intent(Intent.ACTION_OPEN_DOCUMENT);
             pick.addCategory(Intent.CATEGORY_OPENABLE);
@@ -104,7 +109,7 @@ public final class MainActivity extends Activity {
             ClipData clip = clipboard.getPrimaryClip();
             CharSequence value = clip == null ? null : clip.getItemAt(0).getText();
             if (value == null) status.setText("В буфере обмена нет текста.");
-            else code.setText(normalize(value.toString()));
+            else code.setText(value.toString());
         });
         receive = button(content, "Получить", this::receive);
         cancel = button(content, "Остановить", () -> {
@@ -235,28 +240,47 @@ public final class MainActivity extends Activity {
     }
 
     private void send(String kind, String name, byte[] data) {
+        if (offline.isChecked()) {
+            askBroker(kind, name, data, null);
+            return;
+        }
+        customDisplay = null;
         if (!custom.isChecked()) {
             beginSend(kind, name, data, "");
             return;
         }
         EditText editor = secretEditor(false);
-        editor.setHint("4–8 случайных слов");
+        editor.setHint("Свой код от одного символа");
         AlertDialog dialog = new AlertDialog.Builder(this).setTitle("Своя фраза")
-            .setMessage("Введите слова через пробелы. Программа добавит номер сеанса.")
+            .setMessage("Регистр и пробелы учитываются. Короткий код легко угадать. Для ключей лучше автоматический код.")
             .setView(editor).setNegativeButton("Отмена", null).setPositiveButton("Продолжить", null)
             .create();
         dialog.show();
         dialog.getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
         dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
-            String phrase = normalize(editor.getText().toString());
-            if (!phrase.matches(PHRASE)) {
-                editor.setError("Нужно 4–8 слов по 2–24 буквы или цифры.");
+            String phrase = editor.getText().toString();
+            if (!validCustom(phrase)) {
+                editor.setError("Введите от 1 до 256 байт текста в одну строку.");
                 return;
             }
             dialog.dismiss();
             int number = 10000000 + new SecureRandom().nextInt(90000000);
-            beginSend(kind, name, data, number + "-" + phrase);
+            customDisplay = number + ":" + phrase;
+            beginSend(kind, name, data, customWire(Integer.toString(number), phrase));
         });
+    }
+
+    private static boolean validCustom(String value) {
+        return !value.isEmpty() && value.getBytes(StandardCharsets.UTF_8).length <= 256
+            && !value.contains("\n") && !value.contains("\r");
+    }
+
+    private static String customWire(String number, String value) {
+        StringBuilder result = new StringBuilder(number).append("-~");
+        for (byte part : value.getBytes(StandardCharsets.UTF_8)) {
+            result.append(String.format(Locale.ROOT, "%02x", part & 255));
+        }
+        return result.toString();
     }
 
     private static String normalize(String value) {
@@ -271,14 +295,92 @@ public final class MainActivity extends Activity {
     }
 
     private void receive() {
-        String entered = normalize(code.getText().toString());
-        if (!entered.matches("[0-9]{1,12}-" + PHRASE)) {
-            code.setError("Введите номер и все слова.");
+        String rawCode = code.getText().toString().trim();
+        if (rawCode.startsWith("T1-")) {
+            askBroker(null, null, null, rawCode);
             return;
+        }
+        String entered = code.getText().toString();
+        int separator = entered.indexOf(':');
+        if (separator >= 0) {
+            String number = entered.substring(0, separator);
+            String phrase = entered.substring(separator + 1);
+            if (!number.matches("[0-9]{8}") || !validCustom(phrase)) {
+                code.setError("Введите номер сеанса, двоеточие и свой код.");
+                return;
+            }
+            entered = customWire(number, phrase);
+        } else {
+            entered = normalize(entered);
+            if (!entered.matches("[0-9]{1,12}-" + PHRASE)) {
+                code.setError("Введите номер и все слова.");
+                return;
+            }
         }
         setBusy(true);
         status.setText("Ожидание данных…");
         session = Bridge.receive(entered, observer(false));
+    }
+
+    private void askBroker(String kind, String name, byte[] data, String receivedCode) {
+        LinearLayout fields = new LinearLayout(this);
+        fields.setOrientation(LinearLayout.VERTICAL);
+        EditText address = secretEditor(false);
+        address.setHint("HTTPS-адрес посредника");
+        address.setText(broker);
+        fields.addView(address);
+        EditText password = secretEditor(false);
+        if (data != null) {
+            password.setHint("Пароль загрузки");
+            password.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+            fields.addView(password);
+        }
+        AlertDialog dialog = new AlertDialog.Builder(this).setTitle("Отложенная передача")
+            .setView(fields).setNegativeButton("Отмена", null)
+            .setPositiveButton("Продолжить", null).create();
+        dialog.show();
+        dialog.getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
+            String server = address.getText().toString().trim();
+            String token = password.getText().toString();
+            if (!server.startsWith("https://")) { address.setError("Введите HTTPS-адрес."); return; }
+            if (data != null && token.isEmpty()) { password.setError("Введите пароль."); return; }
+            broker = server;
+            dialog.dismiss();
+            runOffline(server, token, kind, name, data, receivedCode);
+        });
+    }
+
+    private void runOffline(String server, String token, String kind, String name, byte[] data, String receivedCode) {
+        setBusy(true);
+        cancel.setEnabled(false);
+        handler.removeCallbacks(tick);
+        timer.setText("");
+        status.setText("Обращение к хранилищу…");
+        new Thread(() -> {
+            try {
+                if (data == null) {
+                    Offline.receive(server, receivedCode, observer(false));
+                    runOnUiThread(() -> finishOffline("Данные получены."));
+                    return;
+                }
+                String issued = Offline.send(server, token, kind, name, data);
+                runOnUiThread(() -> {
+                    if (isDestroyed() || isFinishing()) return;
+                    finishOffline("Код скопирован. Получатель может забрать данные в течение 24 часов.");
+                    code.setText(issued);
+                    copy(issued);
+                });
+            } catch (IOException | java.security.GeneralSecurityException | org.json.JSONException | IllegalArgumentException error) {
+                runOnUiThread(() -> finishOffline("Проверьте адрес, пароль или код. Передача могла истечь или уже быть получена."));
+            }
+        }).start();
+    }
+
+    private void finishOffline(String message) {
+        if (isDestroyed() || isFinishing()) return;
+        setBusy(false);
+        status.setText(message);
     }
 
     private Observer observer(boolean outbound) {
@@ -286,7 +388,7 @@ public final class MainActivity extends Activity {
             @Override public void code(String value) {
                 runOnUiThread(() -> {
                     if (isDestroyed()) return;
-                    code.setText(value);
+                    code.setText(customDisplay == null ? value : customDisplay);
                     if (cancel.isEnabled()) {
                         copyCode.setText("Скопировать код");
                         copyCode.setEnabled(true);
@@ -338,6 +440,7 @@ public final class MainActivity extends Activity {
             timer.setText("");
         }
         custom.setEnabled(!value);
+        offline.setEnabled(!value);
         sendFile.setEnabled(!value);
         sendText.setEnabled(!value);
         receive.setEnabled(!value);

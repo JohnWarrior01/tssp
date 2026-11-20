@@ -1,3 +1,6 @@
+from cryptography.exceptions import InvalidTag
+
+import vpn_offline
 import os
 import math
 import queue
@@ -12,7 +15,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from twisted.internet import reactor
 
 from vpn_files import read_config, safe_name, save_config
-from vpn_protocol import pack
+from vpn_protocol import ProtocolError, pack, unpack
 from vpn_settings import TIMEOUT, VERSION
 from vpn_updates import UPDATE_ERRORS, download, find_update
 from vpn_transfer_session import Transfer
@@ -26,7 +29,15 @@ def normalize_code(value):
 
 
 def valid_phrase(value):
-    return re.fullmatch(rf"{WORDS}(?:-{WORDS}){{3,7}}", value) is not None
+    return re.fullmatch(rf"{WORDS}(?:-{WORDS}){{1,7}}", value) is not None
+
+
+def valid_custom(value):
+    return 0 < len(value.encode("utf-8")) <= 256 and "\n" not in value and "\r" not in value
+
+
+def custom_wire(number, value):
+    return f"{number}-~{value.encode('utf-8').hex()}"
 
 
 class App:
@@ -34,6 +45,9 @@ class App:
         self.root = root
         self.events = queue.Queue()
         self.transfer = Transfer(self.events)
+        self.offline = tk.BooleanVar()
+        self.broker = ""
+        self.offline_busy = False
         self.mode = None
         self.deadline = None
         self.timer = tk.StringVar()
@@ -78,6 +92,9 @@ class App:
         ttk.Label(panel, textvariable=self.status, wraplength=350).grid(
             row=8, columnspan=2, sticky="w", pady=(16, 0)
         )
+        ttk.Checkbutton(panel, text="Отложенная отправка", variable=self.offline).grid(
+            row=11, columnspan=2, sticky="w", pady=(8, 0)
+        )
         self.update_button = ttk.Button(panel, text="Проверить обновления", command=self.check_updates)
         self.update_button.grid(row=9, column=0, sticky="w", pady=(12, 0))
         ttk.Label(panel, text="Версия " + ".".join(map(str, VERSION))).grid(row=9, column=1, sticky="e", pady=(12, 0))
@@ -95,7 +112,7 @@ class App:
         except tk.TclError:
             self.status.set("В буфере обмена нет текста.")
             return
-        self.code.set(normalize_code(value))
+        self.code.set(value)
         self.entry.focus_set()
 
     def check_updates(self):
@@ -153,33 +170,77 @@ class App:
         text_dialog(self.root, "Отправить текст", None, self.send_payload)
 
     def send_payload(self, data):
+        if self.offline.get():
+            self.run_offline(data=data)
+            return
         code = None
+        self.custom_display = None
         if self.code_mode.get() == "custom":
             phrase = simpledialog.askstring(
                 "Своя фраза",
-                "Введите 4–8 случайных слов через пробел.\n"
-                "Можно использовать русский или английский.\n"
-                "Для этого сеанса программа добавит номер.",
+                "От одного символа. Регистр и пробелы учитываются.\n"
+                "Короткий код легко угадать. Для ключей лучше автоматический код.",
                 parent=self.root,
             )
             if phrase is None:
                 return
-            phrase = normalize_code(phrase)
-            if not valid_phrase(phrase):
-                self.status.set("Нужно 4–8 слов по 2–24 буквы или цифры.")
+            if not valid_custom(phrase):
+                self.status.set("Введите от 1 до 256 байт текста в одну строку.")
                 return
             number = 10_000_000 + secrets.randbelow(90_000_000)
-            code = f"{number}-{phrase}"
+            self.custom_display = f"{number}:{phrase}"
+            code = custom_wire(number, phrase)
         self.code.set("")
         self.start("send", data, code, None)
 
     def receive(self):
+        if self.code.get().strip().startswith("T1-"):
+            self.run_offline(code=self.code.get().strip())
+            return
+        number, separator, phrase = self.code.get().partition(":")
+        if separator:
+            if not re.fullmatch(r"[0-9]{8}", number) or not valid_custom(phrase):
+                self.status.set("Введите номер сеанса, двоеточие и свой код.")
+                return
+            self.start("receive", None, custom_wire(number, phrase), None)
+            return
         code = normalize_code(self.code.get())
         number, _, phrase = code.partition("-")
         if not re.fullmatch(r"[0-9]{1,12}", number) or not valid_phrase(phrase):
             self.status.set("Введите код целиком, включая число и все слова.")
             return
         self.start("receive", None, code, None)
+
+    def run_offline(self, data=None, code=None):
+        if self.offline_busy:
+            return
+        server = simpledialog.askstring("Отложенная передача", "HTTPS-адрес посредника",
+                                        initialvalue=self.broker, parent=self.root)
+        if not server:
+            return
+        self.broker = server.strip()
+        token = ""
+        if data is not None:
+            token = simpledialog.askstring("Отложенная передача", "Пароль загрузки",
+                                           show="*", parent=self.root)
+            if not token:
+                return
+        self.offline_busy = True
+        for button in (self.send_button, self.text_button, self.receive_button):
+            button.state(["disabled"])
+        self.status.set("Обращение к хранилищу…")
+
+        def worker():
+            try:
+                if data is None:
+                    result = ("offline_data", unpack(vpn_offline.receive(self.broker, code)))
+                else:
+                    result = ("offline_code", vpn_offline.send(self.broker, token, data))
+            except (OSError, ValueError, ProtocolError, InvalidTag):
+                result = ("offline_error", None)
+            self.events.put(result)
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def show_payload(self, payload):
         kind, name, data = payload
@@ -247,7 +308,7 @@ class App:
         while not self.events.empty():
             kind, value = self.events.get_nowait()
             if kind == "code" and not self.cancel_button.instate(["disabled"]):
-                self.code.set(value)
+                self.code.set(self.custom_display or value)
                 self.code_button.configure(text="Скопировать код")
                 self.code_button.state(["!disabled"])
                 self.entry.selection_range(0, tk.END)
@@ -267,6 +328,19 @@ class App:
                         os.startfile(value.parent)
                     except OSError:
                         messagebox.showinfo("Обновления", str(value), parent=self.root)
+            elif kind.startswith("offline_"):
+                self.offline_busy = False
+                self.finish("Операция завершена.")
+                if kind == "offline_code":
+                    self.code.set(value)
+                    self.root.clipboard_clear()
+                    self.root.clipboard_append(value)
+                    self.status.set("Код скопирован. Получатель может забрать данные в течение 24 часов.")
+                elif kind == "offline_data":
+                    self.status.set("Данные получены.")
+                    self.show_payload(value)
+                else:
+                    self.status.set("Проверьте адрес, пароль или код. Передача могла истечь или уже быть получена.")
             elif kind == "payload":
                 self.received = value
             elif kind == "done":
@@ -281,6 +355,8 @@ class App:
         self.root.after(80, self.poll)
 
     def close(self):
+        if self.offline_busy:
+            return
         if self.update_button.cget("text").startswith("Загрузка"):
             messagebox.showinfo("Обновления", "Дождитесь завершения загрузки.", parent=self.root)
             return

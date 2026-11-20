@@ -1,5 +1,5 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="app.vpntransfer.mobile" android:versionCode="4" android:versionName="1.2.0">
+    package="app.vpntransfer.mobile" android:versionCode="5" android:versionName="1.3.0">
     <uses-sdk android:minSdkVersion="23" android:targetSdkVersion="34" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
